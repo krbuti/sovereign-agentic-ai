@@ -1,0 +1,7 @@
+apiVersion: v2
+name: qa-supervisor
+description: LangGraph supervisor + Procedure/Spec/Incident agents + Verifier (one chart per service; this one is the supervisor)
+type: application
+version: 0.3.0
+appVersion: "2026.11.0"
+kubeVersion: ">=1.30.0-0"

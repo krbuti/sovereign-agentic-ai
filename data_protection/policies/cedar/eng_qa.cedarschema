@@ -1,0 +1,52 @@
+// Cedar schema (human-readable format) for the EU engineering-knowledge Q&A app layer.
+// Classification levels: 0 public, 1 internal, 2 confidential, 3 restricted.
+namespace EngQA {
+  entity Group;
+
+  entity User in [Group] = {
+    clearance: Long,
+    exportAuthorised: Set<String>,   // ECCNs / Annex I entries the user is licensed for
+    country: String,
+  };
+
+  entity Agent = {
+    onBehalfOf: User,
+    agentRole: String,               // "retriever" | "summariser" | "planner"
+  };
+
+  entity Tool = {
+    mode: String,                    // "read" | "write"
+  };
+
+  entity Model = {
+    inBoundary: Bool,                // BYOM hosted inside customer boundary
+    region: String,
+    maxClassification: Long,
+    exportApproved: Bool,
+  };
+
+  entity Document = {
+    classification: Long,
+    classificationLabel: String,
+    readers: Set<Group>,
+    exportControlled: Bool,
+    eccn?: String,
+    isCurrent: Bool,
+  };
+
+  action retrieve appliesTo {
+    principal: [User, Agent],
+    resource: Document,
+  };
+
+  action sendToModel appliesTo {
+    principal: [Agent],
+    resource: Document,
+    context: { model: Model },
+  };
+
+  action invokeTool appliesTo {
+    principal: [Agent],
+    resource: Tool,
+  };
+}

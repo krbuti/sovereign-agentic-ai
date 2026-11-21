@@ -1,0 +1,48 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.9.8",
+  "configuration": {
+    "provider_config": {
+      "aws": {"name": "aws", "full_name": "registry.terraform.io/hashicorp/aws",
+              "expressions": {"region": {"constant_value": "eu-central-1"}}},
+      "google": {"name": "google", "full_name": "registry.terraform.io/hashicorp/google",
+                 "expressions": {"region": {"constant_value": "europe-west3"}}}
+    }
+  },
+  "resource_changes": [
+    {"address": "aws_kms_key.docs", "type": "aws_kms_key",
+     "change": {"actions": ["create"],
+                "after": {"enable_key_rotation": true, "rotation_period_in_days": 180,
+                          "multi_region": false, "custom_key_store_id": null, "tags": {"data": "eng-qa"}},
+                "after_unknown": {"arn": true, "key_id": true}}},
+    {"address": "aws_kms_key.xks_restricted", "type": "aws_kms_key",
+     "change": {"actions": ["create"],
+                "after": {"enable_key_rotation": false, "multi_region": false,
+                          "custom_key_store_id": "cks-1234567890abcdef0",
+                          "tags": {"rotation-runbook": "RB-KMS-07"}},
+                "after_unknown": {"arn": true}}},
+    {"address": "aws_s3_bucket_server_side_encryption_configuration.docs",
+     "type": "aws_s3_bucket_server_side_encryption_configuration",
+     "change": {"actions": ["create"],
+                "after": {"rule": [{"bucket_key_enabled": true,
+                                    "apply_server_side_encryption_by_default": [{"sse_algorithm": "aws:kms"}]}]},
+                "after_unknown": {"rule": [{"apply_server_side_encryption_by_default": [{"kms_master_key_id": true}]}]}}},
+    {"address": "aws_opensearch_domain.vectors", "type": "aws_opensearch_domain",
+     "change": {"actions": ["create"],
+                "after": {"encrypt_at_rest": [{"enabled": true}], "node_to_node_encryption": [{"enabled": true}]},
+                "after_unknown": {"encrypt_at_rest": [{"kms_key_id": true}]}}},
+    {"address": "aws_bedrock_guardrail.eng_qa", "type": "aws_bedrock_guardrail",
+     "change": {"actions": ["create"],
+                "after": {"name": "eng-qa", "sensitive_information_policy_config": [{"pii_entities_config": [{"type": "EMAIL", "action": "ANONYMIZE"}]}]},
+                "after_unknown": {"kms_key_arn": true}}},
+    {"address": "google_storage_bucket.docs", "type": "google_storage_bucket",
+     "change": {"actions": ["create"],
+                "after": {"location": "EUROPE-WEST3",
+                          "encryption": [{"default_kms_key_name": "projects/p/locations/europe-west3/keyRings/eng/cryptoKeys/docs"}]},
+                "after_unknown": {}}},
+    {"address": "google_kms_crypto_key.docs", "type": "google_kms_crypto_key",
+     "change": {"actions": ["create"],
+                "after": {"rotation_period": "7776000s", "version_template": [{"protection_level": "HSM", "algorithm": "GOOGLE_SYMMETRIC_ENCRYPTION"}]},
+                "after_unknown": {}}}
+  ]
+}

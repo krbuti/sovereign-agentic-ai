@@ -1,0 +1,28 @@
+# Apply each document with: gcloud org-policies set-policy <file>
+# (split into separate files in practice; shown together for reference)
+---
+name: organizations/ORG_ID/policies/gcp.resourceLocations
+spec:
+  rules:
+  - values:
+      allowedValues:
+      - in:eu-locations
+---
+# Require CMEK for listed services (deny = services that may NOT create non-CMEK resources)
+name: organizations/ORG_ID/policies/gcp.restrictNonCmekServices
+spec:
+  rules:
+  - values:
+      deniedValues:
+      - storage.googleapis.com
+      - bigquery.googleapis.com
+      - aiplatform.googleapis.com
+      - discoveryengine.googleapis.com
+---
+# Only keys from the central key project may be used as CMEK
+name: organizations/ORG_ID/policies/gcp.restrictCmekCryptoKeyProjects
+spec:
+  rules:
+  - values:
+      allowedValues:
+      - under:projects/eng-qa-keys

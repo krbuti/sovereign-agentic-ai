@@ -1,0 +1,10 @@
+[
+  {"principal": "EngQA::Agent::\"retriever-for-bob\"", "action": "EngQA::Action::\"invokeTool\"", "resource": "EngQA::Tool::\"search_documents\"", "context": {}, "expected": "Allow"},
+  {"principal": "EngQA::Agent::\"retriever-for-bob\"", "action": "EngQA::Action::\"invokeTool\"", "resource": "EngQA::Tool::\"update_incident\"", "context": {}, "expected": "Deny"},
+  {"principal": "EngQA::User::\"bob\"", "action": "EngQA::Action::\"retrieve\"", "resource": "EngQA::Document::\"inv-3\"", "context": {}, "expected": "Allow"},
+  {"principal": "EngQA::User::\"alice\"", "action": "EngQA::Action::\"retrieve\"", "resource": "EngQA::Document::\"spec-7\"", "context": {}, "expected": "Deny"},
+  {"principal": "EngQA::User::\"alice\"", "action": "EngQA::Action::\"retrieve\"", "resource": "EngQA::Document::\"sop-12-r1\"", "context": {}, "expected": "Deny"},
+  {"principal": "EngQA::Agent::\"retriever-for-bob\"", "action": "EngQA::Action::\"retrieve\"", "resource": "EngQA::Document::\"inv-3\"", "context": {}, "expected": "Allow"},
+  {"principal": "EngQA::Agent::\"retriever-for-bob\"", "action": "EngQA::Action::\"sendToModel\"", "resource": "EngQA::Document::\"spec-7\"", "context": {"model": {"__entity": {"type": "EngQA::Model", "id": "byom-eu"}}}, "expected": "Allow"},
+  {"principal": "EngQA::Agent::\"retriever-for-bob\"", "action": "EngQA::Action::\"sendToModel\"", "resource": "EngQA::Document::\"inv-3\"", "context": {"model": {"__entity": {"type": "EngQA::Model", "id": "byom-eu"}}}, "expected": "Deny"}
+]

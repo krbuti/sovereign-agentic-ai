@@ -1,0 +1,322 @@
+---
+# Source: analysistemplate.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: qa-quality-and-errors
+  labels:
+    app.kubernetes.io/name: qa-supervisor
+    app.kubernetes.io/instance: qa
+    app.kubernetes.io/version: "2026.11.0"
+    app.kubernetes.io/managed-by: Helm
+    data-residency: eu
+spec:
+  metrics:
+    - name: error-ratio
+      interval: 2m
+      failureLimit: 1
+      successCondition: result[0] < 0.01
+      provider:
+        prometheus:
+          address: http://prometheus.observability.svc:9090
+          query: |
+            sum(rate(qa_requests_total{outcome="error",rollouts_pod_template_hash="{{args.canary-hash}}"}[5m]))
+            / sum(rate(qa_requests_total{rollouts_pod_template_hash="{{args.canary-hash}}"}[5m]))
+    - name: verifier-reject-ratio
+      interval: 2m
+      failureLimit: 1
+      successCondition: result[0] < 0.05
+      provider:
+        prometheus:
+          address: http://prometheus.observability.svc:9090
+          query: sum(rate(qa_verifier_rejections_total[10m])) / sum(rate(qa_answers_total[10m]))
+    - name: out-of-region-calls
+      interval: 1m
+      failureLimit: 0
+      successCondition: result[0] == 0
+      provider:
+        prometheus:
+          address: http://prometheus.observability.svc:9090
+          query: sum(increase(qa_model_calls_out_of_region_total[10m])) or vector(0)
+  args:
+    - name: canary-hash
+---
+# Source: deployment.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: qa-qa-supervisor
+  labels:
+    app.kubernetes.io/name: qa-supervisor
+    app.kubernetes.io/instance: qa
+    app.kubernetes.io/version: "2026.11.0"
+    app.kubernetes.io/managed-by: Helm
+    data-residency: eu
+spec:
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: qa-supervisor
+      app.kubernetes.io/instance: qa
+  strategy:
+    canary:
+      analysis:
+        templates:
+          - templateName: qa-quality-and-errors
+        startingStep: 1
+        args:
+          - name: canary-hash
+            valueFrom:
+              podTemplateHashValue: Latest
+      steps:
+        - setWeight: 10
+        - pause: { duration: 15m }
+        - setWeight: 25
+        - pause: { duration: 15m }
+        - setWeight: 50
+        - pause: { duration: 15m }
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: qa-supervisor
+        app.kubernetes.io/instance: qa
+      annotations:
+        checksum/config: 423c5012c1489997ae3dc4d5d264ca126c9e0f9a49324c8c95ac34b8dc44a342
+    spec:
+      serviceAccountName: qa-supervisor
+      automountServiceAccountToken: false
+      securityContext:
+        {"fsGroup":10001,"runAsGroup":10001,"runAsNonRoot":true,"runAsUser":10001,"seccompProfile":{"type":"RuntimeDefault"}}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: qa-supervisor
+              app.kubernetes.io/instance: qa
+      terminationGracePeriodSeconds: 75
+      containers:
+        - name: supervisor
+          image: 111111111111.dkr.ecr.eu-central-1.amazonaws.com/qa/supervisor@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: ALLOWED_MODEL_REGIONS
+              value: "eu-central-1,eu-west-1"
+            - name: MCP_INCIDENT_URL
+              value: "http://mcp-incident.qa-mcp.svc.cluster.local:8080"
+            - name: MCP_PROCEDURE_URL
+              value: "http://mcp-procedure.qa-mcp.svc.cluster.local:8080"
+            - name: MCP_SPEC_URL
+              value: "http://mcp-spec.qa-mcp.svc.cluster.local:8080"
+            - name: MODEL_GATEWAY_URL
+              value: "http://byom-gateway.qa-gateway.svc.cluster.local:8080"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability.svc.cluster.local:4317"
+            - name: OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT
+              value: "false"
+            - name: OTEL_SERVICE_NAME
+              value: "qa-supervisor"
+            - name: AGENT_MAX_STEPS
+              value: "12"
+            - name: AGENT_MAX_TOOL_CALLS
+              value: "20"
+            - name: AGENT_TOKEN_BUDGET
+              value: "24000"
+            - name: SEARCH_ONLY_FALLBACK
+              value: "true"
+          envFrom:
+            - secretRef:
+                name: qa-qa-supervisor-secrets
+          startupProbe:
+            httpGet: { path: /healthz/startup, port: http }
+            failureThreshold: 30
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz/live, port: http }
+            failureThreshold: 3
+            periodSeconds: 10
+            timeoutSeconds: 2
+          readinessProbe:
+            httpGet: { path: /healthz/ready, port: http }
+            failureThreshold: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+          resources:
+            {"limits":{"memory":"3Gi"},"requests":{"cpu":"1","memory":"2Gi"}}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 256Mi }
+---
+# Source: externalsecret.yaml
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: qa-qa-supervisor-secrets
+  labels:
+    app.kubernetes.io/name: qa-supervisor
+    app.kubernetes.io/instance: qa
+    app.kubernetes.io/version: "2026.11.0"
+    app.kubernetes.io/managed-by: Helm
+    data-residency: eu
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    {"kind":"ClusterSecretStore","name":"aws-secrets-manager-eu"}
+  target:
+    name: qa-qa-supervisor-secrets
+    creationPolicy: Owner
+  data:
+    [{"remoteRef":{"key":"qa/prod/checkpoint-db","property":"dsn"},"secretKey":"LANGGRAPH_CHECKPOINT_DSN"}]
+---
+# Source: hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: qa-qa-supervisor
+  labels:
+    app.kubernetes.io/name: qa-supervisor
+    app.kubernetes.io/instance: qa
+    app.kubernetes.io/version: "2026.11.0"
+    app.kubernetes.io/managed-by: Helm
+    data-residency: eu
+spec:
+  scaleTargetRef:
+    apiVersion: argoproj.io/v1alpha1
+    kind: Rollout
+    name: qa-qa-supervisor
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 65
+    - type: Pods
+      pods:
+        metric:
+          name: qa_inflight_requests
+        target:
+          type: AverageValue
+          averageValue: "8"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+---
+# Source: networkpolicy.yaml
+# Default-deny for this workload, then explicit allows. Plain NetworkPolicy cannot match FQDNs,
+# so model endpoints are reached via private CIDRs (AWS VPC interface endpoints / GCP PSC) and only
+# from the gateway namespace. Use CiliumNetworkPolicy toFQDNs (or an egress gateway) if FQDN rules are needed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: qa-qa-supervisor
+  labels:
+    app.kubernetes.io/name: qa-supervisor
+    app.kubernetes.io/instance: qa
+    app.kubernetes.io/version: "2026.11.0"
+    app.kubernetes.io/managed-by: Helm
+    data-residency: eu
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: qa-supervisor
+      app.kubernetes.io/instance: qa
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: qa-ingress }
+      ports:
+        - { protocol: TCP, port: 8080 }
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: qa-gateway }
+      ports:
+        - { protocol: TCP, port: 8080 }
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: qa-mcp }
+      ports:
+        - { protocol: TCP, port: 8080 }
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: observability }
+      ports:
+        - { protocol: TCP, port: 4317 }
+    - to:
+        - ipBlock: { cidr: 10.20.0.0/24 }
+      ports:
+        - { protocol: TCP, port: 443 }
+---
+# Source: pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: qa-qa-supervisor
+  labels:
+    app.kubernetes.io/name: qa-supervisor
+    app.kubernetes.io/instance: qa
+    app.kubernetes.io/version: "2026.11.0"
+    app.kubernetes.io/managed-by: Helm
+    data-residency: eu
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: qa-supervisor
+      app.kubernetes.io/instance: qa
+---
+# Source: service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: qa-qa-supervisor
+  labels:
+    app.kubernetes.io/name: qa-supervisor
+    app.kubernetes.io/instance: qa
+    app.kubernetes.io/version: "2026.11.0"
+    app.kubernetes.io/managed-by: Helm
+    data-residency: eu
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: qa-supervisor
+    app.kubernetes.io/instance: qa
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+# Source: serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: qa-supervisor
+  labels:
+    app.kubernetes.io/name: qa-supervisor
+    app.kubernetes.io/instance: qa
+    app.kubernetes.io/version: "2026.11.0"
+    app.kubernetes.io/managed-by: Helm
+    data-residency: eu
+  annotations:
+    {"eks.amazonaws.com/role-arn":"arn:aws:iam::111111111111:role/qa-supervisor-readonly"}
+automountServiceAccountToken: false

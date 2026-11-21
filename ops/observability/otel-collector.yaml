@@ -1,0 +1,33 @@
+# OpenTelemetry Collector (contrib distribution) - EU-only telemetry pipeline with DLP redaction.
+# Prompt/response content is not exported by default; spans keep ids, model role, tokens, latency.
+receivers:
+  otlp:
+    protocols:
+      grpc: { endpoint: 0.0.0.0:4317 }
+      http: { endpoint: 0.0.0.0:4318 }
+processors:
+  memory_limiter: { check_interval: 1s, limit_percentage: 80, spike_limit_percentage: 20 }
+  attributes/strip_content:
+    actions:
+      - { key: gen_ai.input.messages, action: delete }
+      - { key: gen_ai.output.messages, action: delete }
+      - { key: gen_ai.system_instructions, action: delete }
+      - { key: enduser.id, action: hash }
+  redaction:
+    allow_all_keys: true
+    blocked_values:
+      - "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"   # e-mail
+      - "AKIA[0-9A-Z]{16}"                                  # AWS access key id
+      - "(?i)lot[- ]?id[:= ]?[A-Z0-9]{6,}"                  # fab lot ids (customer-specific DLP pattern)
+    summary: info
+  batch: {}
+exporters:
+  otlphttp/eu:
+    endpoint: https://otel-ingest.eu-central-1.observability.internal   # self-hosted / EU-region backend
+  prometheus:
+    endpoint: 0.0.0.0:8889
+service:
+  pipelines:
+    traces:  { receivers: [otlp], processors: [memory_limiter, attributes/strip_content, redaction, batch], exporters: [otlphttp/eu] }
+    metrics: { receivers: [otlp], processors: [memory_limiter, batch], exporters: [prometheus] }
+    logs:    { receivers: [otlp], processors: [memory_limiter, attributes/strip_content, redaction, batch], exporters: [otlphttp/eu] }

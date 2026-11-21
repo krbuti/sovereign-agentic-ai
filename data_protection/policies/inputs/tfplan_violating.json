@@ -1,0 +1,28 @@
+{
+  "format_version": "1.2",
+  "configuration": {
+    "provider_config": {
+      "aws": {"name": "aws", "expressions": {"region": {"constant_value": "eu-central-1"}}},
+      "aws.us": {"name": "aws", "alias": "us", "expressions": {"region": {"constant_value": "us-east-1"}}}
+    }
+  },
+  "resource_changes": [
+    {"address": "aws_kms_key.global", "type": "aws_kms_key",
+     "change": {"actions": ["create"], "after": {"enable_key_rotation": false, "multi_region": true}, "after_unknown": {}}},
+    {"address": "aws_s3_bucket_server_side_encryption_configuration.logs",
+     "type": "aws_s3_bucket_server_side_encryption_configuration",
+     "change": {"actions": ["create"],
+                "after": {"rule": [{"apply_server_side_encryption_by_default": [{"sse_algorithm": "AES256", "kms_master_key_id": null}]}]},
+                "after_unknown": {}}},
+    {"address": "aws_opensearch_domain.vectors", "type": "aws_opensearch_domain",
+     "change": {"actions": ["create"],
+                "after": {"encrypt_at_rest": [{"enabled": true, "kms_key_id": ""}], "node_to_node_encryption": [{"enabled": false}]},
+                "after_unknown": {}}},
+    {"address": "aws_bedrock_guardrail.eng_qa", "type": "aws_bedrock_guardrail",
+     "change": {"actions": ["create"], "after": {"name": "eng-qa"}, "after_unknown": {}}},
+    {"address": "google_storage_bucket.export", "type": "google_storage_bucket",
+     "change": {"actions": ["create"], "after": {"location": "US", "encryption": []}, "after_unknown": {}}},
+    {"address": "google_kms_crypto_key.k", "type": "google_kms_crypto_key",
+     "change": {"actions": ["create"], "after": {"version_template": [{"protection_level": "SOFTWARE"}]}, "after_unknown": {}}}
+  ]
+}

@@ -1,0 +1,58 @@
+# promtool test rules slo-rules.test.yaml
+rule_files:
+  - slo-rules.yaml
+evaluation_interval: 1m
+tests:
+  # 10% errors for 2h -> fast burn (14.4 * 0.005 = 7.2%) must page.
+  - interval: 1m
+    input_series:
+      - series: 'qa_requests_total{outcome="success"}'
+        values: '0+90x180'
+      - series: 'qa_requests_total{outcome="error"}'
+        values: '0+10x180'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: QAAvailabilityBudgetBurnFast
+        exp_alerts:
+          - exp_labels: { severity: page, slo: availability-99.5 }
+            exp_annotations:
+              summary: "QA availability error budget burning fast (2% in 1h or 5% in 6h)"
+              runbook_url: https://runbooks.internal/qa/model-provider-outage
+  # 0.2% errors (under budget) -> no fast-burn page.
+  - interval: 1m
+    input_series:
+      - series: 'qa_requests_total{outcome="success"}'
+        values: '0+998x180'
+      - series: 'qa_requests_total{outcome="error"}'
+        values: '0+2x180'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: QAAvailabilityBudgetBurnFast
+        exp_alerts: []
+  # Any out-of-region call pages immediately.
+  - interval: 1m
+    input_series:
+      - series: 'qa_model_calls_out_of_region_total'
+        values: '0 0 0 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: QAOutOfRegionModelCall
+        exp_alerts:
+          - exp_labels: { severity: page, category: sovereignty }
+            exp_annotations:
+              summary: "Model call resolved to a non-EU endpoint; gateway must fail closed. Freeze model routing."
+              runbook_url: https://runbooks.internal/qa/out-of-region
+  # Token budget at 85% -> ticket.
+  - interval: 1m
+    input_series:
+      - series: 'qa_tokens_used_total{tenant="fab-dresden"}'
+        values: '850000x5'
+      - series: 'qa_token_budget{tenant="fab-dresden"}'
+        values: '1000000x5'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: QATokenBudget80Percent
+        exp_alerts:
+          - exp_labels: { severity: ticket, category: cost, tenant: fab-dresden }
+            exp_annotations:
+              summary: "Tenant fab-dresden has used > 80% of the monthly token budget"

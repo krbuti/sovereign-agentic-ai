@@ -1,0 +1,22 @@
+{
+  "name": "eng-qa-guardrail",
+  "blockedInputMessaging": "This request contains data that cannot be sent to the model.",
+  "blockedOutputsMessaging": "The response was withheld by data-protection policy.",
+  "kmsKeyId": "arn:aws:kms:eu-central-1:111122223333:key/REPLACE",
+  "sensitiveInformationPolicyConfig": {
+    "piiEntitiesConfig": [
+      {"type": "EMAIL", "action": "ANONYMIZE", "inputAction": "ANONYMIZE", "outputAction": "ANONYMIZE", "inputEnabled": true, "outputEnabled": true},
+      {"type": "PHONE", "action": "ANONYMIZE", "inputEnabled": true, "outputEnabled": true},
+      {"type": "NAME", "action": "NONE", "inputEnabled": true, "outputEnabled": true},
+      {"type": "INTERNATIONAL_BANK_ACCOUNT_NUMBER", "action": "BLOCK", "inputEnabled": true, "outputEnabled": true},
+      {"type": "AWS_ACCESS_KEY", "action": "BLOCK", "inputEnabled": true, "outputEnabled": true},
+      {"type": "AWS_SECRET_KEY", "action": "BLOCK", "inputEnabled": true, "outputEnabled": true},
+      {"type": "PASSWORD", "action": "BLOCK", "inputEnabled": true, "outputEnabled": true}
+    ],
+    "regexesConfig": [
+      {"name": "ClassificationMarker", "pattern": "\\[(CLASSIFICATION|LABEL): *(RESTRICTED|EXPORT-CONTROLLED)\\]", "action": "BLOCK", "description": "Document classification markers", "inputEnabled": true, "outputEnabled": true},
+      {"name": "DualUseEntry", "pattern": "\\b[0-9][A-E][0-9]{3}\\b", "action": "BLOCK", "description": "EU dual-use Annex I entry references (e.g. 3E001)", "inputEnabled": true, "outputEnabled": true},
+      {"name": "ProjectCodename", "pattern": "(?i)\\b(orchid|kestrel)\\b", "action": "BLOCK", "description": "Unreleased programme codenames", "inputEnabled": true, "outputEnabled": true}
+    ]
+  }
+}

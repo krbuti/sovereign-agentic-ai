@@ -1,0 +1,8 @@
+{"format_version":"1.2","configuration":{"provider_config":{"aws":{"name":"aws","expressions":{"region":{"constant_value":"us-east-1"}}}}},
+ "resource_changes":[
+  {"address":"aws_kms_key.data","type":"aws_kms_key","change":{"actions":["create"],"after":{"enable_key_rotation":false}}},
+  {"address":"aws_s3_bucket_server_side_encryption_configuration.corpus","type":"aws_s3_bucket_server_side_encryption_configuration","change":{"actions":["create"],"after":{"rule":[{"apply_server_side_encryption_by_default":[{"sse_algorithm":"AES256"}]}]}}},
+  {"address":"aws_s3_bucket_public_access_block.corpus","type":"aws_s3_bucket_public_access_block","change":{"actions":["create"],"after":{"block_public_acls":true,"block_public_policy":false,"ignore_public_acls":true,"restrict_public_buckets":true}}},
+  {"address":"google_storage_bucket.idx","type":"google_storage_bucket","change":{"actions":["create"],"after":{"location":"US"}}},
+  {"address":"aws_db_instance.x","type":"aws_db_instance","change":{"actions":["create"],"after":{"password":"hunter2"}}}
+ ]}

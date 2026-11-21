@@ -1,0 +1,37 @@
+{{- if .Values.rollout.enabled }}
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: qa-quality-and-errors
+  labels: {{- include "qa.labels" . | nindent 4 }}
+spec:
+  metrics:
+    - name: error-ratio
+      interval: 2m
+      failureLimit: 1
+      successCondition: result[0] < 0.01
+      provider:
+        prometheus:
+          address: http://prometheus.observability.svc:9090
+          query: |
+            sum(rate(qa_requests_total{outcome="error",rollouts_pod_template_hash="{{ "{{" }}args.canary-hash{{ "}}" }}"}[5m]))
+            / sum(rate(qa_requests_total{rollouts_pod_template_hash="{{ "{{" }}args.canary-hash{{ "}}" }}"}[5m]))
+    - name: verifier-reject-ratio
+      interval: 2m
+      failureLimit: 1
+      successCondition: result[0] < 0.05
+      provider:
+        prometheus:
+          address: http://prometheus.observability.svc:9090
+          query: sum(rate(qa_verifier_rejections_total[10m])) / sum(rate(qa_answers_total[10m]))
+    - name: out-of-region-calls
+      interval: 1m
+      failureLimit: 0
+      successCondition: result[0] == 0
+      provider:
+        prometheus:
+          address: http://prometheus.observability.svc:9090
+          query: sum(increase(qa_model_calls_out_of_region_total[10m])) or vector(0)
+  args:
+    - name: canary-hash
+{{- end }}

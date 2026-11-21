@@ -1,0 +1,133 @@
+# Prometheus recording + alerting rules for the EU engineering-knowledge Q&A system.
+# Validate: promtool check rules slo-rules.yaml ; promtool test rules slo-rules.test.yaml
+#
+# Metric sources
+#  - qa_requests_total{outcome}            app counter; outcome in success|search_only|refused|error
+#  - qa_model_calls_total{model_role,result} BYOM gateway; result in ok|provider_error|fallback
+#  - qa_model_calls_out_of_region_total    BYOM gateway; must stay 0
+#  - qa_permission_violations_total        retrieval guard; must stay 0
+#  - qa_model_call_duration_seconds_bucket{model_role}   gateway-side histogram
+#  - qa_ttft_seconds_bucket{model_role}    client-side time to first token (streaming)
+#  - gen_ai_server_time_to_first_token_seconds_bucket   provider/serving side, if the customer's
+#      serving stack exports OTel GenAI server metrics (name per OTel GenAI semconv, Development status)
+#  - qa_online_faithfulness                gauge from the sampled online judge (0..1)
+#  - qa_tokens_used_total / qa_token_budget  monthly budget tracking per tenant
+#
+# SLO: availability 99.5% over 30d (search-only and correct refusals count as served).
+# Error budget = 0.005. Burn-rate thresholds per Google SRE Workbook ch.5 (14.4x/6x/1x,
+# short window = 1/12 long window).
+groups:
+  - name: qa-sli-recording
+    interval: 30s
+    rules:
+      - record: qa:request_errors:ratio_rate5m
+        expr: sum(rate(qa_requests_total{outcome="error"}[5m])) / sum(rate(qa_requests_total[5m]))
+      - record: qa:request_errors:ratio_rate30m
+        expr: sum(rate(qa_requests_total{outcome="error"}[30m])) / sum(rate(qa_requests_total[30m]))
+      - record: qa:request_errors:ratio_rate1h
+        expr: sum(rate(qa_requests_total{outcome="error"}[1h])) / sum(rate(qa_requests_total[1h]))
+      - record: qa:request_errors:ratio_rate6h
+        expr: sum(rate(qa_requests_total{outcome="error"}[6h])) / sum(rate(qa_requests_total[6h]))
+      - record: qa:request_errors:ratio_rate3d
+        expr: sum(rate(qa_requests_total{outcome="error"}[3d])) / sum(rate(qa_requests_total[3d]))
+      - record: qa:search_only:ratio_rate1h
+        expr: sum(rate(qa_requests_total{outcome="search_only"}[1h])) / sum(rate(qa_requests_total[1h]))
+      - record: qa:provider_errors:ratio_rate10m
+        expr: sum by (model_role) (rate(qa_model_calls_total{result="provider_error"}[10m])) / sum by (model_role) (rate(qa_model_calls_total[10m]))
+      - record: qa:fallback:ratio_rate1h
+        expr: sum(rate(qa_model_calls_total{result="fallback"}[1h])) / sum(rate(qa_model_calls_total[1h]))
+      - record: qa:model_latency_seconds:p95_5m
+        expr: histogram_quantile(0.95, sum by (le, model_role) (rate(qa_model_call_duration_seconds_bucket[5m])))
+      - record: qa:ttft_seconds:p95_5m
+        expr: histogram_quantile(0.95, sum by (le, model_role) (rate(qa_ttft_seconds_bucket[5m])))
+      - record: qa:ttft_seconds:p99_5m
+        expr: histogram_quantile(0.99, sum by (le, model_role) (rate(qa_ttft_seconds_bucket[5m])))
+
+  - name: qa-slo-burn-rate
+    rules:
+      - alert: QAAvailabilityBudgetBurnFast
+        expr: |
+          (qa:request_errors:ratio_rate1h > (14.4 * 0.005) and qa:request_errors:ratio_rate5m > (14.4 * 0.005))
+          or
+          (qa:request_errors:ratio_rate6h > (6 * 0.005) and qa:request_errors:ratio_rate30m > (6 * 0.005))
+        labels:
+          severity: page
+          slo: availability-99.5
+        annotations:
+          summary: "QA availability error budget burning fast (2% in 1h or 5% in 6h)"
+          runbook_url: https://runbooks.internal/qa/model-provider-outage
+      - alert: QAAvailabilityBudgetBurnSlow
+        expr: qa:request_errors:ratio_rate3d > (1 * 0.005) and qa:request_errors:ratio_rate6h > (1 * 0.005)
+        labels:
+          severity: ticket
+          slo: availability-99.5
+        annotations:
+          summary: "QA availability error budget: 10% consumed over 3 days"
+
+  - name: qa-sovereignty-and-safety
+    rules:
+      - alert: QAOutOfRegionModelCall
+        expr: sum(increase(qa_model_calls_out_of_region_total[5m])) > 0
+        labels: { severity: page, category: sovereignty }
+        annotations:
+          summary: "Model call resolved to a non-EU endpoint; gateway must fail closed. Freeze model routing."
+          runbook_url: https://runbooks.internal/qa/out-of-region
+      - alert: QAPermissionViolation
+        expr: sum(increase(qa_permission_violations_total[5m])) > 0
+        labels: { severity: page, category: security }
+        annotations:
+          summary: "Document outside caller ACL reached model context or cache; disable semantic cache, investigate."
+
+  - name: qa-model-and-quality
+    rules:
+      - alert: QAProviderErrorRateHigh
+        expr: qa:provider_errors:ratio_rate10m > 0.01
+        for: 10m
+        labels: { severity: ticket }
+        annotations:
+          summary: "Provider error ratio > 1% for role {{ $labels.model_role }}"
+      - alert: QAFallbackRateHigh
+        expr: qa:fallback:ratio_rate1h > 0.02
+        for: 15m
+        labels: { severity: ticket }
+        annotations:
+          summary: "Fallback model used for > 2% of calls (EU fallback only; check primary endpoint)"
+      - alert: QASearchOnlyModeHigh
+        expr: qa:search_only:ratio_rate1h > 0.01
+        for: 15m
+        labels: { severity: page }
+        annotations:
+          summary: "> 1% of requests served in search-only mode (primary and fallback models unavailable)"
+      - alert: QAAnswerLatencyP95High
+        expr: qa:model_latency_seconds:p95_5m{model_role="answer"} > 8
+        for: 15m
+        labels: { severity: ticket }
+        annotations:
+          summary: "p95 answer-model latency > 8s"
+      - alert: QATTFTP99High
+        expr: qa:ttft_seconds:p99_5m{model_role="answer"} > 4
+        for: 15m
+        labels: { severity: ticket }
+        annotations:
+          summary: "Client-side TTFT p99 > 4s (compare with provider-side gen_ai_server_time_to_first_token)"
+      - alert: QAOnlineFaithfulnessLow
+        # "Up but wrong": availability can be green while quality degrades.
+        expr: avg_over_time(qa_online_faithfulness[1h]) < 0.85
+        for: 30m
+        labels: { severity: page, category: quality }
+        annotations:
+          summary: "Sampled online faithfulness < 0.85 for 30m; consider rolling back model/prompt/index change"
+
+  - name: qa-cost
+    rules:
+      - alert: QATokenBudget80Percent
+        expr: sum by (tenant) (qa_tokens_used_total) / sum by (tenant) (qa_token_budget) > 0.8
+        labels: { severity: ticket, category: cost }
+        annotations:
+          summary: "Tenant {{ $labels.tenant }} has used > 80% of the monthly token budget"
+      - alert: QAAgentLoopSuspected
+        expr: histogram_quantile(0.99, sum by (le) (rate(qa_agent_steps_per_request_bucket[15m]))) >= 12
+        for: 10m
+        labels: { severity: ticket, category: cost }
+        annotations:
+          summary: "p99 agent steps per request at the step limit; possible loop or tool failure"

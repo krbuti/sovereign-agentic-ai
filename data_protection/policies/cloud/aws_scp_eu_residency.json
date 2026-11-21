@@ -1,0 +1,52 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyOutsideEURegions",
+      "Effect": "Deny",
+      "NotAction": [
+        "iam:*", "organizations:*", "sts:*", "support:*", "account:*",
+        "cloudfront:*", "route53:*", "route53domains:*", "waf:*", "globalaccelerator:*",
+        "budgets:*", "ce:*", "health:*", "trustedadvisor:*", "s3:GetAccountPublicAccessBlock",
+        "s3:ListAllMyBuckets", "kms:ListAliases"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:RequestedRegion": ["eu-central-1", "eu-west-1", "eu-west-3", "eu-north-1"]
+        },
+        "ArnNotLike": {
+          "aws:PrincipalARN": ["arn:aws:iam::*:role/BreakGlassAdmin"]
+        }
+      }
+    },
+    {
+      "Sid": "DenyMultiRegionKmsKeys",
+      "Effect": "Deny",
+      "Action": ["kms:CreateKey", "kms:ReplicateKey"],
+      "Resource": "*",
+      "Condition": { "Bool": { "kms:MultiRegion": "true" } }
+    },
+    {
+      "Sid": "ProtectKeyMaterialFromDeletion",
+      "Effect": "Deny",
+      "Action": ["kms:ScheduleKeyDeletion", "kms:DeleteImportedKeyMaterial", "kms:DisableKey", "kms:DeleteCustomKeyStore", "kms:DisconnectCustomKeyStore"],
+      "Resource": "*",
+      "Condition": { "ArnNotLike": { "aws:PrincipalARN": ["arn:aws:iam::*:role/KeyCustodian"] } }
+    },
+    {
+      "Sid": "DenyS3PutWithoutSSEKMS",
+      "Effect": "Deny",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::eng-qa-*/*",
+      "Condition": { "StringNotEqualsIfExists": { "s3:x-amz-server-side-encryption": ["aws:kms", "aws:kms:dsse"] } }
+    },
+    {
+      "Sid": "RequireGuardrailOnInvoke",
+      "Effect": "Deny",
+      "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:Converse", "bedrock:ConverseStream"],
+      "Resource": "*",
+      "Condition": { "Null": { "bedrock:GuardrailIdentifier": "true" } }
+    }
+  ]
+}

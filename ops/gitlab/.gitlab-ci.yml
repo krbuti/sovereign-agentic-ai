@@ -1,0 +1,75 @@
+# GitLab CI equivalent (sketch). OIDC via id_tokens -> AWS STS AssumeRoleWithWebIdentity.
+# IAM trust: federated principal = gitlab.example.eu OIDC provider; condition on
+#   <host>:aud = sts.amazonaws.com  and  <host>:sub = project_path:grp/qa:ref_type:branch:ref:main
+stages: [verify, gate, build, staging, production]
+
+default:
+  image: registry.example.eu/ci/python:3.12   # mirrored image in EU registry, digest-pinned in practice
+
+variables:
+  AWS_REGION: eu-central-1
+  CHART: deploy/helm/qa-supervisor
+
+.aws_oidc: &aws_oidc
+  id_tokens:
+    AWS_ID_TOKEN:
+      aud: sts.amazonaws.com
+  before_script:
+    - >
+      export $(printf "AWS_ACCESS_KEY_ID=%s AWS_SECRET_ACCESS_KEY=%s AWS_SESSION_TOKEN=%s"
+      $(aws sts assume-role-with-web-identity --role-arn "$ROLE_ARN"
+      --role-session-name "gl-$CI_PIPELINE_ID" --web-identity-token "$AWS_ID_TOKEN"
+      --duration-seconds 3600 --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text))
+
+lint_test:
+  stage: verify
+  script:
+    - pip install --require-hashes -r requirements-dev.lock
+    - ruff check . && pytest -q
+    - helm lint "$CHART"
+
+scan:
+  stage: verify
+  image: { name: aquasec/trivy:0.69.3, entrypoint: [""] }   # pin by digest; avoid 0.69.4-0.69.6 (compromised)
+  script:
+    - trivy fs --scanners vuln,misconfig,secret --severity CRITICAL,HIGH --exit-code 1 .
+
+eval_gate:
+  stage: gate
+  script:
+    - python3 eval/eval_harness.py --report eval.json
+  artifacts: { when: always, paths: [eval.json] }
+
+build_sign:
+  stage: build
+  <<: *aws_oidc
+  variables: { ROLE_ARN: "arn:aws:iam::111111111111:role/gl-build-eu" }
+  rules: [{ if: '$CI_COMMIT_BRANCH == "main"' }]
+  script:
+    - ./scripts/build_push.sh             # buildx push, writes IMAGE@DIGEST to image.env
+    - cosign sign --yes --key awskms:///alias/cosign-release-eu "$(cat image.ref)"
+  artifacts: { reports: { dotenv: image.env } }
+
+deploy_staging:
+  stage: staging
+  <<: *aws_oidc
+  variables: { ROLE_ARN: "arn:aws:iam::222222222222:role/gl-deploy-staging" }
+  environment: { name: staging }
+  rules: [{ if: '$CI_COMMIT_BRANCH == "main"' }]
+  script:
+    - aws eks update-kubeconfig --name qa-staging --region "$AWS_REGION"
+    - helm upgrade --install qa "$CHART" -n qa -f "$CHART/values-staging.yaml"
+      --set image.digest="$IMAGE_DIGEST" --rollback-on-failure --wait --timeout 10m
+    - python3 eval/eval_harness.py --report staging-eval.json
+
+canary_prod:
+  stage: production
+  <<: *aws_oidc
+  variables: { ROLE_ARN: "arn:aws:iam::333333333333:role/gl-deploy-prod" }
+  environment: { name: production }
+  when: manual                            # protected environment with approvers
+  rules: [{ if: '$CI_COMMIT_BRANCH == "main"' }]
+  script:
+    - aws eks update-kubeconfig --name qa-prod --region "$AWS_REGION"
+    - helm upgrade --install qa "$CHART" -n qa -f "$CHART/values-prod.yaml"
+      --set image.digest="$IMAGE_DIGEST" --set rollout.enabled=true --rollback-on-failure --wait --timeout 15m

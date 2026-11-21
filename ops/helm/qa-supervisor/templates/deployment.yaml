@@ -1,0 +1,102 @@
+{{- if not .Values.rollout.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+{{- else }}
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+{{- end }}
+metadata:
+  name: {{ include "qa.fullname" . }}
+  labels: {{- include "qa.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels: {{- include "qa.selectorLabels" . | nindent 6 }}
+  {{- if .Values.rollout.enabled }}
+  strategy:
+    canary:
+      analysis:
+        templates:
+          - templateName: qa-quality-and-errors
+        startingStep: 1
+        args:
+          - name: canary-hash
+            valueFrom:
+              podTemplateHashValue: Latest
+      steps:
+        {{- range .Values.rollout.steps }}
+        - setWeight: {{ . }}
+        - pause: { duration: {{ $.Values.rollout.pauseMinutes }}m }
+        {{- end }}
+  {{- else }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 25%, maxUnavailable: 0 }
+  {{- end }}
+  template:
+    metadata:
+      labels: {{- include "qa.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ toJson .Values.config | sha256sum }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {{- include "qa.selectorLabels" . | nindent 14 }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ add .Values.agent.requestTimeoutSeconds 15 }}
+      containers:
+        - name: supervisor
+          image: {{ include "qa.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+          env:
+            {{- range $k, $v := .Values.config }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            - name: AGENT_MAX_STEPS
+              value: {{ .Values.agent.maxSteps | quote }}
+            - name: AGENT_MAX_TOOL_CALLS
+              value: {{ .Values.agent.maxToolCallsPerRequest | quote }}
+            - name: AGENT_TOKEN_BUDGET
+              value: {{ .Values.agent.tokenBudgetPerRequest | quote }}
+            - name: SEARCH_ONLY_FALLBACK
+              value: {{ .Values.agent.searchOnlyFallback | quote }}
+          {{- if .Values.externalSecret.enabled }}
+          envFrom:
+            - secretRef:
+                name: {{ include "qa.fullname" . }}-secrets
+          {{- end }}
+          startupProbe:
+            httpGet: { path: {{ .Values.probes.startup.path }}, port: http }
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+          livenessProbe:
+            httpGet: { path: {{ .Values.probes.liveness.path }}, port: http }
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+          readinessProbe:
+            httpGet: { path: {{ .Values.probes.readiness.path }}, port: http }
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 256Mi }

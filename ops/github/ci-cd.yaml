@@ -1,0 +1,200 @@
+# .github/workflows/ci-cd.yaml
+# Sovereign EU engineering-knowledge Q&A: PR gates -> build/sign -> staging -> canary prod.
+#
+# Supply-chain rule: pin every third-party action to a FULL COMMIT SHA in the real repo
+# (the March 2026 trivy-action/setup-trivy tag force-push showed tags are mutable).
+# Tags below are shown for readability; replace with `owner/action@<40-char-sha> # vX.Y.Z`
+# and let Dependabot/Renovate bump them.
+name: ci-cd
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read            # least privilege by default; jobs opt in to id-token
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  AWS_REGION: eu-central-1                       # EU only; SCP denies anything else
+  ECR_REPO: qa/supervisor
+  CHART: deploy/helm/qa-supervisor
+  # Signing key lives in an EU KMS CMK (no public transparency log upload of identities).
+  COSIGN_KEY: awskms:///alias/cosign-release-eu  # alternative: keyless OIDC (see note in sign step)
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - name: Install dev deps (hash-pinned lock file)
+        run: pip install --require-hashes -r requirements-dev.lock
+      - name: Lint
+        run: |
+          ruff check .
+          ruff format --check .
+          yamllint -s deploy/ .github/
+      - name: Unit tests
+        run: pytest -q --junitxml=reports/unit.xml
+      - name: Helm lint + template (schema-validated)
+        run: |
+          helm lint "$CHART" -f "$CHART/values.yaml" -f "$CHART/values-prod.yaml"
+          helm template qa "$CHART" -f "$CHART/values-prod.yaml" | kubeconform -strict -summary -
+      - name: Terraform fmt/validate + policy on plan input
+        working-directory: infra/terraform
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false
+          terraform validate
+
+  security-scan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Trivy filesystem scan (deps, IaC misconfig, secrets)
+        uses: aquasecurity/trivy-action@v0.35.0   # the only tag Aqua reported unaffected in Mar 2026; pin SHA
+        with:
+          scan-type: fs
+          scanners: vuln,misconfig,secret
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Grype dependency scan (second opinion)
+        uses: anchore/scan-action@v6
+        with:
+          path: "."
+          fail-build: true
+          severity-cutoff: high
+
+  eval-gate:
+    # Quality/safety/sovereignty KPI gate. Blocks merge (required status check).
+    runs-on: ubuntu-24.04
+    needs: [lint-test]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - name: Golden-set evaluation (offline, against mock/replayed retrieval)
+        run: python3 eval/eval_harness.py --model "${{ vars.ANSWER_MODEL || 'eu-large-a' }}" --report reports/eval.json
+      - name: Model-swap regression (only when the model-role map changes)
+        if: ${{ contains(github.event.pull_request.labels.*.name, 'model-swap') }}
+        run: python3 eval/eval_harness.py --swap "${{ vars.ANSWER_MODEL }}" "${{ vars.CANDIDATE_MODEL }}" --report reports/swap.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: eval-report, path: reports/ }
+
+  build-sign-push:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [lint-test, security-scan, eval-gate]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write          # OIDC token for AWS STS; no long-lived keys
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/gha-build-eu
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-${{ github.run_id }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - id: meta
+        run: echo "image=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.image }}:${{ github.sha }}
+          provenance: mode=max     # SLSA provenance attestation
+          sbom: true               # SPDX SBOM attestation
+      - name: Trivy image scan (by digest)
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: ${{ steps.meta.outputs.image }}@${{ steps.build.outputs.digest }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign image by digest (KMS key in EU)
+        # Keyless alternative: `cosign sign --yes IMAGE@DIGEST` uses GitHub OIDC -> Fulcio cert and
+        # records the signing identity in the PUBLIC Rekor log. For a sovereign deployment either keep
+        # KMS-key signing (this step) or run a private Sigstore (Fulcio/Rekor) in the EU.
+        run: |
+          cosign sign --yes --key "$COSIGN_KEY" \
+            -a git_sha=${{ github.sha }} -a run=${{ github.run_id }} \
+            "${{ steps.meta.outputs.image }}@${{ steps.build.outputs.digest }}"
+
+  deploy-staging:
+    needs: build-sign-push
+    runs-on: ubuntu-24.04
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.STAGING_ACCOUNT_ID }}:role/gha-deploy-staging
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: sigstore/cosign-installer@v3
+      - name: Verify signature before deploy (cluster also enforces via admission policy)
+        run: cosign verify --key "$COSIGN_KEY" "${{ needs.build-sign-push.outputs.image }}@${{ needs.build-sign-push.outputs.digest }}"
+      - uses: azure/setup-helm@v4
+        with: { version: v4.0.0 }   # verify latest 4.x; changelog lists 4.3.1 as of Nov 2026
+      - name: Helm deploy (Helm 4 flag names)
+        run: |
+          aws eks update-kubeconfig --name qa-staging --region "$AWS_REGION"
+          helm upgrade --install qa "$CHART" -n qa --create-namespace \
+            -f "$CHART/values.yaml" -f "$CHART/values-staging.yaml" \
+            --set image.repository="${{ needs.build-sign-push.outputs.image }}" \
+            --set image.digest="${{ needs.build-sign-push.outputs.digest }}" \
+            --rollback-on-failure --wait --timeout 10m
+          # Helm 3 equivalent: --atomic (renamed to --rollback-on-failure in Helm 4)
+      - name: Smoke test + online eval against staging
+        run: |
+          ./scripts/smoke.sh https://qa.staging.internal/healthz
+          python3 eval/eval_harness.py --report reports/staging-eval.json   # swap MockSystem for HTTP adapter
+
+  canary-prod:
+    needs: [build-sign-push, deploy-staging]
+    runs-on: ubuntu-24.04
+    environment: production    # required reviewers + wait timer configured on the environment
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.PROD_ACCOUNT_ID }}:role/gha-deploy-prod
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: azure/setup-helm@v4
+        with: { version: v4.0.0 }
+      - name: Start canary (Argo Rollouts performs 10% -> 25% -> 50% -> 100% with analysis)
+        # The Rollout's AnalysisTemplate queries Prometheus for: 5xx/error ratio, provider error ratio,
+        # fallback ratio, verifier-reject ratio, online faithfulness sample, out_of_region_calls == 0.
+        # Any failed analysis => automatic abort + rollback to the stable ReplicaSet.
+        run: |
+          aws eks update-kubeconfig --name qa-prod --region "$AWS_REGION"
+          helm upgrade --install qa "$CHART" -n qa \
+            -f "$CHART/values.yaml" -f "$CHART/values-prod.yaml" \
+            --set image.repository="${{ needs.build-sign-push.outputs.image }}" \
+            --set image.digest="${{ needs.build-sign-push.outputs.digest }}" \
+            --set rollout.enabled=true \
+            --rollback-on-failure --wait --timeout 15m

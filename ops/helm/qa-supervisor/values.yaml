@@ -1,0 +1,107 @@
+# Defaults shared by all environments. Override per env with values-<env>.yaml.
+replicaCount: 2
+
+image:
+  repository: 111111111111.dkr.ecr.eu-central-1.amazonaws.com/qa/supervisor
+  digest: ""            # deploy by digest (sha256:...), set by CI; tag is informational only
+  tag: ""
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  name: qa-supervisor
+  # EKS: IRSA role annotation (or use EKS Pod Identity association managed in Terraform).
+  # GKE: iam.gke.io/gcp-service-account: qa-supervisor@PROJECT.iam.gserviceaccount.com
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::111111111111:role/qa-supervisor-readonly
+  automountToken: false
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+service:
+  type: ClusterIP
+  port: 8080
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    memory: 2Gi         # memory limit set; CPU limit omitted to avoid throttling (requests drive scheduling)
+
+probes:
+  startup:   { path: /healthz/startup, failureThreshold: 30, periodSeconds: 5 }
+  liveness:  { path: /healthz/live,    failureThreshold: 3,  periodSeconds: 10, timeoutSeconds: 2 }
+  # Readiness = can serve at least search-only mode (index reachable). Model-gateway outage
+  # must NOT fail readiness, otherwise a provider outage takes the whole service down.
+  readiness: { path: /healthz/ready,   failureThreshold: 3,  periodSeconds: 5,  timeoutSeconds: 2 }
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 65
+  # Agent workloads are I/O-bound on model calls; in-flight requests is a better signal than CPU.
+  # Requires prometheus-adapter / KEDA exposing this per-pod metric.
+  inflightRequestsPerPod: 8
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+topologySpread:
+  enabled: true
+
+agent:
+  maxSteps: 12                 # supervisor graph recursion / step limit
+  maxToolCallsPerRequest: 20
+  tokenBudgetPerRequest: 24000
+  requestTimeoutSeconds: 60
+  searchOnlyFallback: true     # degrade to retrieval-only answers with citations when models are down
+
+config:
+  MODEL_GATEWAY_URL: http://byom-gateway.qa-gateway.svc.cluster.local:8080
+  MCP_SPEC_URL: http://mcp-spec.qa-mcp.svc.cluster.local:8080
+  MCP_PROCEDURE_URL: http://mcp-procedure.qa-mcp.svc.cluster.local:8080
+  MCP_INCIDENT_URL: http://mcp-incident.qa-mcp.svc.cluster.local:8080
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.observability.svc.cluster.local:4317
+  OTEL_SERVICE_NAME: qa-supervisor
+  # Do not record prompt/response content in spans by default (DLP); opt in per env.
+  OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: "false"
+  ALLOWED_MODEL_REGIONS: eu-central-1,eu-west-1
+
+externalSecret:
+  enabled: true
+  secretStoreRef: { name: aws-secrets-manager-eu, kind: ClusterSecretStore }
+  refreshInterval: 1h
+  data:
+    - secretKey: LANGGRAPH_CHECKPOINT_DSN
+      remoteRef: { key: qa/prod/checkpoint-db, property: dsn }
+
+networkPolicy:
+  enabled: true
+  # Supervisor may only talk to: DNS, the BYOM gateway, MCP servers, OTel collector.
+  # Only the gateway namespace (separate chart) has egress to EU model endpoints.
+  allowNamespaces:
+    - { name: qa-gateway, port: 8080 }
+    - { name: qa-mcp, port: 8080 }
+    - { name: observability, port: 4317 }
+  # Used by the gateway chart: private (VPC endpoint / PSC) CIDRs of the customer's EU model endpoints.
+  modelEndpointCIDRs: []
+
+rollout:
+  enabled: false         # Argo Rollouts canary in prod
+  steps: [10, 25, 50]
+  pauseMinutes: 10

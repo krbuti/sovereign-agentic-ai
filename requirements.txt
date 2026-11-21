@@ -1,0 +1,7 @@
+# Core reference code is stdlib-only except the MCP layer and optional LangGraph.
+mcp>=2.3.0        # MCP Python SDK v2 (MCPServer)
+pyjwt>=2.8        # token verification in mcp/auth.py
+pytest>=8         # mcp tests
+langgraph>=1.0    # optional: agents/sovereign_agents.py falls back to agents/minigraph.py if absent
+opentelemetry-api # optional: tracing spans in the gateway
+redis             # optional: shared token budget in the gateway
