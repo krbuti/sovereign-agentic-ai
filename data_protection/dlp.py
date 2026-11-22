@@ -216,9 +216,10 @@ def default_engine(restricted_docs=(), codenames=frozenset({"ORCHID"})) -> DLPEn
 
 
 if __name__ == "__main__":
-    secret_spec = ("novel etch chemistry for gaa nanosheet release uses a buffered "
+    # Fictional "confidential IP" sample used to demo document fingerprinting, not a credential.
+    confidential_ip_sample = ("novel etch chemistry for gaa nanosheet release uses a buffered "
                    "fluoride mixture at 23 c with 40 s dwell and selective sige removal")
-    eng = default_engine([secret_spec])
+    eng = default_engine([confidential_ip_sample])
     q = "Ask jan.kowalski@fab.example (+49 170 1234567) why chamber 10.2.3.4 arcs"
     r = eng.inspect_input(q, session_id="s1")
     print("INPUT  :", r.action.name, "|", r.text)
@@ -230,6 +231,6 @@ if __name__ == "__main__":
     model_out = r.text.replace("Ask", "I have notified")
     r4 = eng.inspect_output(model_out, session_id="s1", authorised_to_reidentify=True)
     print("OUTPUT :", r4.action.name, "|", r4.text)
-    leak = "Sure! The process: " + secret_spec
+    leak = "Sure! The process: " + confidential_ip_sample
     r5 = eng.inspect_output(leak, session_id="s1")
     print("LEAK   :", r5.action.name, [a["kind"] for a in r5.audit])

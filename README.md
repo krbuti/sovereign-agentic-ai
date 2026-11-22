@@ -37,10 +37,24 @@ flowchart TB
 | `ops/` | Evaluation harness with KPI gates (100% exact numeric match, zero out-of-region calls, model-swap regression), GitHub Actions (OIDC, scan, sign, eval gate, Helm), GitLab CI sketch, Terraform (EU region pinning, KMS CMK), Helm chart (probes, HPA, PDB, NetworkPolicy, canary), Prometheus multi-window burn-rate SLO alerts | Harness 9 tests pass; alerts promtool-tested; workflow actionlint-clean; Terraform/Helm syntax-checked only |
 | `docs/` | Full design: architecture, component table, decisions and code per layer, threat model mapped to OWASP LLM Top 10 (2025) and OWASP Agentic (ASI01–ASI10), phased rollout, provider-outage runbook, open questions | n/a |
 
+## Security checks (blocking on every push and pull request)
+
+The code was written with help from AI coding tools, so it is treated as untrusted input and verified automatically by `.github/workflows/ci.yml`:
+
+| Check | Tool | What it catches |
+|---|---|---|
+| All test suites | unittest, pytest, eval harness | Functional and quality regressions, including negative tests (wrong token audience, missing scope, injected text in tool results) |
+| Static security analysis | Ruff `S` rules (Bandit's checks) | Hard-coded secrets, SQL built from strings, unsafe calls such as `eval`, `pickle`, `shell=True` |
+| Dependency audit | pip-audit | Known vulnerabilities in dependencies |
+| Secret scanning | gitleaks, full history | Credentials committed by mistake (fake test keys are allowlisted in `.gitleaks.toml`) |
+
+Findings from the first scan, and how they were resolved: a demo signing secret now comes from the environment (production uses identity-provider keys); a SQL query that interpolates a table name now checks it against a fixed allowlist (user text was already parameterised); retry jitter is marked as non-cryptographic randomness.
+
 ## Run the tests
 
 ```bash
-pip install -r requirements.txt          # langgraph, redis, opentelemetry are optional
+pip install -r requirements.txt
+ruff check .                              # security lint (pip install ruff)          # langgraph, redis, opentelemetry are optional
 cd agents && python -m unittest test_all && cd ..
 cd data_protection && python -m unittest test_data_protection && cd ..
 cd mcp && python -m pytest -q tests/ && cd ..

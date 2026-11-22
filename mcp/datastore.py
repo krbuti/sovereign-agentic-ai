@@ -118,14 +118,20 @@ class ReadOnlyRepository:
             raise NotFound(part_id)
         return [SpecRow(*r) for r in rows]
 
+    _SEARCHABLE_TABLES = frozenset({"procedures", "incidents"})
+
     def _search(self, table: str, query: str, limit: int) -> list[dict]:
+        # The table name cannot be a bound parameter in SQL, so it comes only from this
+        # fixed allowlist; user text is always passed as a parameter below.
+        if table not in self._SEARCHABLE_TABLES:
+            raise ValueError(f"table not searchable: {table!r}")
         # Turn free text into a safe FTS5 OR-query of quoted tokens (no FTS syntax injection).
         tokens = [t for t in re.findall(r"[A-Za-z0-9_]+", query)][:12]
         if not tokens:
             return []
         fts = " OR ".join(f'"{t}"' for t in tokens)
         rows = self._conn.execute(
-            f"SELECT doc_id, title, body FROM {table} WHERE {table} MATCH ? ORDER BY rank LIMIT ?",
+            f"SELECT doc_id, title, body FROM {table} WHERE {table} MATCH ? ORDER BY rank LIMIT ?",  # noqa: S608 - allowlisted table, parameterised query
             (fts, limit),
         ).fetchall()
         return [{"doc_id": d, "title": t, "snippet": b[:300]} for d, t, b in rows]

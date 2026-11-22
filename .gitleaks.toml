@@ -1,0 +1,18 @@
+# Secret scanning config: use gitleaks' default rules, but allow the deliberately fake
+# credentials that exist only to test the DLP detector and the MCP auth checks.
+title = "sovereign-agentic-ai gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fake test credentials used to verify detection logic"
+paths = [
+  '''data_protection/test_data_protection\.py''',
+  '''data_protection/dlp\.py''',
+  '''mcp/tests/.*''',
+]
+regexes = [
+  '''AKIAABCDEFGHIJKLMNOP''',
+  '''demo-only-shared-secret-change-me-32bytes!''',
+]

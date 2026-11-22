@@ -1,0 +1,61 @@
+# Runs on every push and pull request. Both jobs are blocking checks:
+# protect `main` with "Require status checks to pass" so a failure stops the merge.
+# Supply-chain note: pin third-party actions to full commit SHAs in production
+# (tags are shown here for readability; tag hijacking hit trivy-action in March 2026).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Agents and BYOM gateway
+        working-directory: agents
+        run: python -m unittest test_all
+      - name: Data protection
+        working-directory: data_protection
+        run: python -m unittest test_data_protection
+      - name: MCP server and gateway
+        working-directory: mcp
+        run: python -m pytest -q tests
+      - name: Evaluation harness and KPI gate
+        working-directory: ops/eval
+        run: |
+          python -m unittest test_eval_harness
+          python eval_harness.py
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # full history so the secret scan covers every commit
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Static security analysis (Ruff 'S' rules = Bandit checks)
+        run: |
+          python -m pip install ruff
+          ruff check .
+      - name: Dependency vulnerability audit
+        run: |
+          python -m pip install pip-audit
+          pip-audit -r requirements.txt
+      - name: Secret scanning (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml

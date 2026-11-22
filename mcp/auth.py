@@ -16,6 +16,7 @@ issuer's jwks_uri (PyJWT: jwt.PyJWKClient), algorithms pinned, small leeway.
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 
@@ -26,7 +27,13 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 # ---- deployment constants (EU-only endpoints) -------------------------------------------
 RESOURCE_URI = "https://eng-knowledge.mcp.eu-central-1.example.internal/mcp"  # canonical URI, no trailing slash
 ISSUER = "https://idp.eu-central-1.example.internal"
-DEMO_SECRET = "demo-only-shared-secret-change-me-32bytes!"  # HS256 demo only
+# Demo/test signing key. Read from the environment; the fallback exists only so the offline
+# tests run. Production uses asymmetric keys (RS256/ES256) fetched from the identity
+# provider's JWKS endpoint, never a shared secret in code.
+DEMO_SECRET = os.environ.get(
+    "MCP_DEMO_HS256_SECRET",
+    "demo-only-shared-secret-change-me-32bytes!",  # noqa: S105 - offline test fallback only
+)
 ALGORITHMS = ["HS256"]  # production: ["RS256"] or ["ES256"], never "none"
 
 # ---- scope model: one read scope per data domain; no write scopes exist -----------------

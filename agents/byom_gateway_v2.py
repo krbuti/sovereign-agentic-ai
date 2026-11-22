@@ -736,7 +736,7 @@ class Gateway:
         self.budget = budget or make_budget_store()
         self.retry, self.retry_budget = retry, retry_budget or RetryBudget(clock=clock)
         self.indexes = index_registry
-        self.clock, self.sleep, self.rng = clock, sleep, rng or random.Random()
+        self.clock, self.sleep, self.rng = clock, sleep, rng or random.Random()  # noqa: S311 - retry jitter, not cryptography
         self._breaker_factory = breaker_factory or (lambda: CircuitBreaker(clock=clock))
         self.breakers: dict[str, CircuitBreaker] = {}
         self.latency, self.costs, self.audit_log = LatencyTracker(), CostLedger(), _audit_logger()
@@ -979,7 +979,7 @@ def build_demo_gateway(responder=None, budget_tokens: Optional[int] = None, seed
     idx.switch("fab-eu", "idx-v3-titan")
     masker = LayeredMasker(person_names=("Jane Murphy", "Tomasz Nowak"))
     gw = Gateway(registry, tenants, {"mock": mock}, masker=masker, budget=InMemoryBudgetStore(),
-                 index_registry=idx, rng=random.Random(seed), sleep=sleep)
+                 index_registry=idx, rng=random.Random(seed), sleep=sleep)  # noqa: S311 - seeded demo jitter
     return gw, mock
 
 
